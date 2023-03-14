@@ -7,7 +7,6 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::thread;
 
 /// Cache that remembers the result for each key.
 #[derive(Debug, Default)]
