@@ -1,15 +1,19 @@
 //! Thread-safe key/value cache.
 
 use std::collections::hash_map::{Entry, HashMap};
+use std::collections::HashSet;
+use std::default::Default;
+use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex, RwLock};
+use std::rc::Rc;
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::thread;
 
 /// Cache that remembers the result for each key.
 #[derive(Debug, Default)]
 pub struct Cache<K, V> {
-    // todo! This is an example cache type. Build your own cache type that satisfies the
-    // specification for `get_or_insert_with`.
-    inner: Mutex<HashMap<K, V>>,
+    data: Mutex<HashMap<K, V>>,
+    preflight: Mutex<HashMap<K, Arc<Condvar>>>,
 }
 
 impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
@@ -28,10 +32,39 @@ impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
     ///
     /// [`Entry`]: https://doc.rust-lang.org/stable/std/collections/hash_map/struct.HashMap.html#method.entry
     pub fn get_or_insert_with<F: FnOnce(K) -> V>(&self, key: K, f: F) -> V {
-        let mut map = self.inner.lock().unwrap();
-        (*map)
-            .entry(key.clone())
-            .or_insert_with(|| f(key))
-            .to_owned()
+        {
+            let data = self.data.lock().unwrap();
+            if data.contains_key(&key) {
+                return data.get(&key).unwrap().to_owned();
+            }
+        }
+        let mut preflight = self.preflight.lock().unwrap();
+        if preflight.contains_key(&key) {
+            let condvar = Arc::clone(preflight.get(&key).unwrap());
+            let guard = condvar.wait(preflight).unwrap();
+        } else {
+            {
+                let data = self.data.lock().unwrap();
+                if data.contains_key(&key) {
+                    return data.get(&key).unwrap().to_owned();
+                }
+            }
+            {
+                preflight.insert(key.clone(), Default::default());
+                drop(preflight);
+            }
+            let v = f(key.clone());
+            {
+                let mut data = self.data.lock().unwrap();
+                data.insert(key.clone(), v.clone());
+            }
+            {
+                let mut preflight = self.preflight.lock().unwrap();
+                let condvar = preflight.remove(&key).unwrap();
+                condvar.notify_all();
+            }
+        }
+        let data = self.data.lock().unwrap();
+        data.get(&key).unwrap().to_owned()
     }
 }

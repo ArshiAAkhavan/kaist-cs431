@@ -2,11 +2,13 @@ use crossbeam_channel::bounded;
 use cs431_homework::hello_server::Cache;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Barrier;
-use std::thread::scope;
+use std::thread::{scope, self};
 use std::time::Duration;
 
-const NUM_THREADS: usize = 8;
-const NUM_KEYS: usize = 128;
+// const NUM_THREADS: usize = 2;
+// const NUM_KEYS: usize = 128;
+const NUM_THREADS: usize = 3;
+const NUM_KEYS: usize = 1;
 
 #[test]
 fn cache_no_duplicate_sequential() {
@@ -32,7 +34,9 @@ fn cache_no_duplicate_concurrent() {
                     barrier.wait();
                     for key in 0..NUM_KEYS {
                         cache.get_or_insert_with(key, |k| {
+                            let thread_id = thread::current().id();
                             num_compute.fetch_add(1, Ordering::Relaxed);
+                            dbg!(thread_id);
                             k
                         });
                     }
