@@ -5,7 +5,7 @@ use std::sync::Barrier;
 use std::thread::scope;
 use std::time::Duration;
 
-const NUM_THREADS: usize = 2;
+const NUM_THREADS: usize = 8;
 const NUM_KEYS: usize = 128;
 
 #[test]
