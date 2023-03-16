@@ -19,7 +19,7 @@ impl Drop for Worker {
     /// When dropped, the thread's `JoinHandle` must be `join`ed.  If the worker panics, then this
     /// function should panic too.  NOTE: that the thread is detached if not `join`ed explicitly.
     fn drop(&mut self) {
-        let t = self.thread.take().unwrap().join().unwrap();
+        self.thread.take().unwrap().join().unwrap();
     }
 }
 
@@ -54,7 +54,7 @@ impl ThreadPoolInner {
     fn wait_empty(&self) {
         let guard = self.job_count.lock().unwrap();
         if *guard != 0 {
-            let _ = self.empty_condvar.wait(guard);
+            let _lock = self.empty_condvar.wait(guard).unwrap();
         }
     }
 
@@ -86,15 +86,10 @@ impl ThreadPool {
             let pool_inner = Arc::clone(&pool_inner);
             let reciever = reciever.clone();
 
-            let handle = thread::spawn(move || loop {
-                match reciever.recv() {
-                    Ok(j) => {
-                        j.0();
-                        pool_inner.finish_job();
-                    }
-                    Err(e) => {
-                        break;
-                    }
+            let handle = thread::spawn(move || {
+                while let Ok(j) = reciever.recv() {
+                    j.0();
+                    pool_inner.finish_job();
                 }
             });
             let worker = Worker {

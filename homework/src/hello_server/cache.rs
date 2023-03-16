@@ -8,11 +8,22 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
+#[derive(Debug)]
+enum CacheEntry<V> {
+    Value(V),
+    Computing(Arc<Condvar>),
+}
+
+impl<V> Default for CacheEntry<V> {
+    fn default() -> Self {
+        Self::Computing(Arc::new(Condvar::new()))
+    }
+}
+
 /// Cache that remembers the result for each key.
 #[derive(Debug, Default)]
 pub struct Cache<K, V> {
-    data: Mutex<HashMap<K, V>>,
-    preflight: Mutex<HashMap<K, Arc<Condvar>>>,
+    data: Mutex<HashMap<K, CacheEntry<V>>>,
 }
 
 impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
@@ -31,39 +42,32 @@ impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
     ///
     /// [`Entry`]: https://doc.rust-lang.org/stable/std/collections/hash_map/struct.HashMap.html#method.entry
     pub fn get_or_insert_with<F: FnOnce(K) -> V>(&self, key: K, f: F) -> V {
-        {
-            let data = self.data.lock().unwrap();
-            if data.contains_key(&key) {
-                return data.get(&key).unwrap().to_owned();
-            }
-        }
-        let mut preflight = self.preflight.lock().unwrap();
-        if preflight.contains_key(&key) {
-            let condvar = Arc::clone(preflight.get(&key).unwrap());
-            let guard = condvar.wait(preflight).unwrap();
-        } else {
-            {
-                let data = self.data.lock().unwrap();
-                if data.contains_key(&key) {
-                    return data.get(&key).unwrap().to_owned();
+        let mut data = self.data.lock().unwrap();
+        if let Some(entry) = data.get(&key) {
+            // there has been previouse attempts to fetch this key
+            match entry {
+                CacheEntry::Value(v) => v.to_owned(),
+                CacheEntry::Computing(c) => {
+                    let data = Arc::clone(c).wait(data).unwrap();
+                    let v = data.get(&key).unwrap();
+                    match v {
+                        CacheEntry::Value(v) => v.to_owned(),
+                        CacheEntry::Computing(_) => unreachable!(),
+                    }
                 }
             }
-            {
-                preflight.insert(key.clone(), Default::default());
-                drop(preflight);
-            }
+        } else {
+            // first one to ever fetch the key
+            data.insert(key.clone(), Default::default());
+            drop(data);
             let v = f(key.clone());
-            {
-                let mut data = self.data.lock().unwrap();
-                data.insert(key.clone(), v.clone());
-            }
-            {
-                let mut preflight = self.preflight.lock().unwrap();
-                let condvar = preflight.remove(&key).unwrap();
+            let mut data = self.data.lock().unwrap();
+            let condvar = data.remove(&key).unwrap();
+            data.insert(key, CacheEntry::Value(v.clone()));
+            if let CacheEntry::Computing(condvar) = condvar {
                 condvar.notify_all();
             }
+            v
         }
-        let data = self.data.lock().unwrap();
-        data.get(&key).unwrap().to_owned()
     }
 }
