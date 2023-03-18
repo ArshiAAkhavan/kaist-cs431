@@ -204,7 +204,7 @@ impl<T> Arc<T> {
     /// ```
     #[inline]
     pub fn try_unwrap(this: Self) -> Result<T, Self> {
-        if unsafe { this.ptr.as_ref() }.count.load(Ordering::Acquire) == 1 {
+        if this.inner().count.load(Ordering::Acquire) == 1 {
             let Arc { ptr, phantom } = this;
             let raw_ptr = this.ptr.as_ptr();
             let data = (*unsafe { Box::from_raw(raw_ptr) }).data;
