@@ -102,7 +102,7 @@ impl<T> Arc<T> {
     // underlying data.
     #[inline]
     fn is_unique(&mut self) -> bool {
-        self.inner().count.load(Ordering::SeqCst) == 0
+        self.inner().count.load(Ordering::SeqCst) == 1
     }
 
     /// Returns a mutable reference into the given `Arc` without any check.
@@ -320,8 +320,9 @@ impl<T> Drop for Arc<T> {
     fn drop(&mut self) {
         let count = self.inner().count.fetch_sub(1, Ordering::SeqCst);
         if count == 1 {
-            drop(&mut unsafe { self.ptr.as_mut() }.data);
-            unsafe { std::ptr::drop_in_place(self.ptr.as_ptr()) }
+            unsafe {
+                Box::from_raw(self.ptr.as_ptr());
+            }
         }
     }
 }
