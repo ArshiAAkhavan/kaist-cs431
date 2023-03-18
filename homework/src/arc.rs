@@ -102,7 +102,7 @@ impl<T> Arc<T> {
     // underlying data.
     #[inline]
     fn is_unique(&mut self) -> bool {
-        self.inner().count.load(Ordering::SeqCst) == 1
+        self.inner().count.load(Ordering::Acquire) == 1
     }
 
     /// Returns a mutable reference into the given `Arc` without any check.
@@ -153,7 +153,7 @@ impl<T> Arc<T> {
     /// ```
     #[inline]
     pub fn count(this: &Self) -> usize {
-        this.inner().count.load(Ordering::SeqCst)
+        this.inner().count.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -204,7 +204,7 @@ impl<T> Arc<T> {
     /// ```
     #[inline]
     pub fn try_unwrap(this: Self) -> Result<T, Self> {
-        if unsafe { this.ptr.as_ref() }.count.load(Ordering::SeqCst) == 1 {
+        if unsafe { this.ptr.as_ref() }.count.load(Ordering::Acquire) == 1 {
             let Arc { ptr, phantom } = this;
             let raw_ptr = this.ptr.as_ptr();
             let data = (*unsafe { Box::from_raw(raw_ptr) }).data;
@@ -247,6 +247,10 @@ impl<T: Clone> Arc<T> {
         if this.is_unique() {
             &mut unsafe { this.ptr.as_mut() }.data
         } else {
+            unsafe { this.ptr.as_mut() }
+                .count
+                .fetch_sub(1, Ordering::Release);
+
             this.ptr = Box::leak(Box::new(ArcInner {
                 count: AtomicUsize::new(1),
                 data: T::clone(&this.inner().data),
@@ -278,7 +282,7 @@ impl<T> Clone for Arc<T> {
     /// ```
     #[inline]
     fn clone(&self) -> Arc<T> {
-        self.inner().count.fetch_add(1, Ordering::SeqCst);
+        self.inner().count.fetch_add(1, Ordering::Relaxed);
         Arc::from_inner(self.ptr)
     }
 }
@@ -318,8 +322,8 @@ impl<T> Drop for Arc<T> {
     /// drop(foo2);   // Prints "dropped!"
     /// ```
     fn drop(&mut self) {
-        let count = self.inner().count.fetch_sub(1, Ordering::SeqCst);
-        if count == 1 {
+        if self.inner().count.fetch_sub(1, Ordering::Release) == 1 {
+            fence(Ordering::Acquire);
             unsafe {
                 Box::from_raw(self.ptr.as_ptr());
             }
