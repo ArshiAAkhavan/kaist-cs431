@@ -132,17 +132,13 @@ impl<T: Ord> OrderedListSet<T> {
             match curr_node.data.cmp(key) {
                 cmp::Ordering::Less => {
                     let next_guard = curr_node.next.lock().unwrap();
-                    drop(curr_guard);
                     curr_guard = next_guard;
                 }
                 cmp::Ordering::Equal => {
                     let removed_node = unsafe { Box::from_raw(*curr_guard) };
                     let next_guard = curr_node.next.lock().unwrap();
                     *curr_guard = *next_guard;
-                    drop(curr_guard);
-                    drop(next_guard);
                     return Ok(removed_node.data);
-                    // return Err(());
                 }
                 cmp::Ordering::Greater => return Err(()),
             }
