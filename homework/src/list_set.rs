@@ -1,4 +1,5 @@
 use std::cmp;
+use std::fmt::Debug;
 use std::ptr;
 use std::sync::{Mutex, MutexGuard};
 
@@ -58,7 +59,10 @@ impl<T> OrderedListSet<T> {
     }
 }
 
-impl<T: Ord> OrderedListSet<T> {
+impl<T: Ord> OrderedListSet<T>
+where
+    T: Debug,
+{
     fn find(&self, key: &T) -> (bool, Cursor<T>) {
         let guard = self.head.lock().unwrap();
         let mut cursor = Cursor(guard);
@@ -73,66 +77,53 @@ impl<T: Ord> OrderedListSet<T> {
 
     /// Insert a key to the set. If the set already has the key, return the provided key in `Err`.
     pub fn insert(&self, key: T) -> Result<(), T> {
-        let mut prev: Option<Cursor<T>> = None;
-        let guard = self.head.lock().unwrap();
-        let mut curr = Cursor(guard);
-        while let Some(node) = unsafe { (*curr.0).as_ref() } {
-            match node.data.cmp(&key) {
-                cmp::Ordering::Greater => {
-                    let node = Node::new(key, *curr.0);
-                    match prev {
-                        Some(prev_cursor) => {
-                            let prev_node = unsafe { &*(prev_cursor.0).as_mut().unwrap() };
-                            *prev_node.next.lock().unwrap() = node;
-                        }
-                        None => *curr.0 = node,
-                    }
-                    return Ok(());
+        let mut curr_guard = self.head.lock().unwrap();
+
+        while let Some(curr_node) = unsafe { curr_guard.as_ref() } {
+            match curr_node.data.cmp(&key) {
+                cmp::Ordering::Less => {
+                    let next_guard = curr_node.next.lock().unwrap();
+                    curr_guard = next_guard;
                 }
                 cmp::Ordering::Equal => return Err(key),
-                cmp::Ordering::Less => {
-                    let prev_guard = std::mem::replace(&mut curr.0, node.next.lock().unwrap());
-                    prev = Some(Cursor(prev_guard));
+                cmp::Ordering::Greater => {
+                    let new_node = Node::new(key, *curr_guard);
+                    *curr_guard = new_node;
+                    return Ok(());
                 }
             }
         }
-        // head in null
         let node = Node::new(key, ptr::null_mut());
-        let mut guard = curr.0;
-        *guard = node;
+        *curr_guard = node;
         Ok(())
     }
 
     /// Remove the key from the set and return it.
     pub fn remove(&self, key: &T) -> Result<T, ()> {
-        let mut prev: Option<Cursor<T>> = None;
-        let guard = self.head.lock().unwrap();
-        let mut curr = Cursor(guard);
-        while let Some(node) = unsafe { (*curr.0).as_ref() } {
-            match node.data.cmp(key) {
-                cmp::Ordering::Greater => return Err(()),
-                cmp::Ordering::Equal => {
-                    let data = *(curr.0);
-                    match prev {
-                        Some(prev_cursor) => {
-                            let prev_node = unsafe { (*prev_cursor.0).as_ref() }.unwrap();
-                            *prev_node.next.lock().unwrap() = *curr.0;
-                        }
-                        None => {
-                            let next = unsafe { (*curr.0).as_ref() }.unwrap();
-                            *curr.0 = *next.next.lock().unwrap();
-                        }
-                    }
-                    return Err(());
-                    // return Ok(unsafe { (*data) }.data);
-                }
+        let mut curr_guard = self.head.lock().unwrap();
+        let raw_ptr = *curr_guard;
+        if raw_ptr.is_null() {
+            return Err(());
+        }
+        while let Some(curr_node) = unsafe { (*curr_guard).as_ref() } {
+            match curr_node.data.cmp(key) {
                 cmp::Ordering::Less => {
-                    let prev_guard = std::mem::replace(&mut curr.0, node.next.lock().unwrap());
-                    prev = Some(Cursor(prev_guard));
+                    let next_guard = curr_node.next.lock().unwrap();
+                    drop(curr_guard);
+                    curr_guard = next_guard;
                 }
+                cmp::Ordering::Equal => {
+                    let removed_node = unsafe { Box::from_raw(*curr_guard) };
+                    let next_guard = curr_node.next.lock().unwrap();
+                    *curr_guard = *next_guard;
+                    drop(curr_guard);
+                    drop(next_guard);
+                    return Ok(removed_node.data);
+                    // return Err(());
+                }
+                cmp::Ordering::Greater => return Err(()),
             }
         }
-        // head in null
         Err(())
     }
 }
@@ -147,17 +138,29 @@ impl<T> OrderedListSet<T> {
     }
 }
 
-impl<'l, T> Iterator for Iter<'l, T> {
+impl<'l, T> Iterator for Iter<'l, T>
+where T:Debug{
     type Item = &'l T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        let guard = self.0.as_ref()?;
+        let node = unsafe { guard.as_ref() }?;
+
+        self.0 = Some(node.next.lock().unwrap());
+
+        Some(&node.data)
     }
 }
 
 impl<T> Drop for OrderedListSet<T> {
     fn drop(&mut self) {
-        todo!()
+        let mut cursor = *self.head.lock().unwrap();
+        while !cursor.is_null() {
+            unsafe {
+                let node = Box::from_raw(cursor);
+                cursor = *node.next.lock().unwrap();
+            }
+        }
     }
 }
 
