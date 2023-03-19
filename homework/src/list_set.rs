@@ -96,33 +96,29 @@ impl<T: Ord> OrderedListSet<T> {
 
     /// Returns `true` if the set contains the key.
     pub fn contains(&self, key: &T) -> bool {
-        match self.find(key).state {
-            CursorState::Found => true,
-            _ => false,
-        }
+        matches!(self.find(key).state, CursorState::Found)
     }
 
     /// Insert a key to the set. If the set already has the key, return the provided key in `Err`.
     pub fn insert(&self, key: T) -> Result<(), T> {
-        let mut curr_guard = self.head.lock().unwrap();
-
-        while let Some(curr_node) = unsafe { curr_guard.as_ref() } {
-            match curr_node.data.cmp(&key) {
-                cmp::Ordering::Less => {
-                    let next_guard = curr_node.next.lock().unwrap();
-                    curr_guard = next_guard;
+        let mut cursor = self.find(&key);
+        match cursor.state {
+            CursorState::Insert => {
+                match unsafe { cursor.cursor.as_ref() } {
+                    Some(curr_node) => {
+                        let new_node = Node::new(key, *cursor.cursor);
+                        *cursor.cursor = new_node;
+                    }
+                    None => {
+                        let node = Node::new(key, ptr::null_mut());
+                        *cursor.cursor = node;
+                    }
                 }
-                cmp::Ordering::Equal => return Err(key),
-                cmp::Ordering::Greater => {
-                    let new_node = Node::new(key, *curr_guard);
-                    *curr_guard = new_node;
-                    return Ok(());
-                }
+                Ok(())
             }
+            CursorState::Found => Err(key),
+            CursorState::Searching => unreachable!(),
         }
-        let node = Node::new(key, ptr::null_mut());
-        *curr_guard = node;
-        Ok(())
     }
 
     /// Remove the key from the set and return it.
