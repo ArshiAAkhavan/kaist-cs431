@@ -21,16 +21,21 @@ pub struct OrderedListSet<T> {
 unsafe impl<T: Send> Send for OrderedListSet<T> {}
 unsafe impl<T: Sync> Sync for OrderedListSet<T> {}
 
+/// state of the Cursor
 enum CursorState {
+    /// Cursor couldn't find the key but is holding the guard where you should insert the key 
     Insert,
+    /// Cursor is holding the guard that contains the key
     Found,
+    /// Cursor is still searching for the key
+    /// this state is interal and should not be used otherwise 
     Searching,
 }
 
 // reference to the `next` field of previous node which points to the current node
 struct Cursor<'l, T> {
     state: CursorState,
-    cursor: MutexGuard<'l, *mut Node<T>>,
+    guard: MutexGuard<'l, *mut Node<T>>,
 }
 
 impl<T> Node<T> {
@@ -46,35 +51,35 @@ impl<'l, T: Ord> Cursor<'l, T> {
     fn new(guard: MutexGuard<'l, *mut Node<T>>) -> Self {
         Self {
             state: CursorState::Searching,
-            cursor: guard,
+            guard,
         }
     }
 
     fn found(guard: MutexGuard<'l, *mut Node<T>>) -> Self {
         Self {
             state: CursorState::Found,
-            cursor: guard,
+            guard,
         }
     }
     fn inserting(guard: MutexGuard<'l, *mut Node<T>>) -> Self {
         Self {
             state: CursorState::Insert,
-            cursor: guard,
+            guard,
         }
     }
     /// Move the cursor to the position of key in the sorted list. If the key is found in the list,
     /// return `true`.
     fn find(mut self, key: &T) -> Cursor<'l, T> {
-        while let Some(node) = unsafe { (*self.cursor).as_ref() } {
+        while let Some(node) = unsafe { (*self.guard).as_ref() } {
             match node.data.cmp(key) {
-                cmp::Ordering::Greater => return Cursor::inserting(self.cursor),
-                cmp::Ordering::Equal => return Cursor::found(self.cursor),
+                cmp::Ordering::Greater => return Cursor::inserting(self.guard),
+                cmp::Ordering::Equal => return Cursor::found(self.guard),
                 cmp::Ordering::Less => {
-                    let _guard = std::mem::replace(&mut self.cursor, node.next.lock().unwrap());
+                    let _guard = std::mem::replace(&mut self.guard, node.next.lock().unwrap());
                 }
             }
         }
-        Cursor::inserting(self.cursor)
+        Cursor::inserting(self.guard)
     }
 }
 
@@ -104,14 +109,14 @@ impl<T: Ord> OrderedListSet<T> {
         let mut cursor = self.find(&key);
         match cursor.state {
             CursorState::Insert => {
-                match unsafe { cursor.cursor.as_ref() } {
+                match unsafe { cursor.guard.as_ref() } {
                     Some(curr_node) => {
-                        let new_node = Node::new(key, *cursor.cursor);
-                        *cursor.cursor = new_node;
+                        let new_node = Node::new(key, *cursor.guard);
+                        *cursor.guard = new_node;
                     }
                     None => {
                         let node = Node::new(key, ptr::null_mut());
-                        *cursor.cursor = node;
+                        *cursor.guard = node;
                     }
                 }
                 Ok(())
@@ -123,27 +128,20 @@ impl<T: Ord> OrderedListSet<T> {
 
     /// Remove the key from the set and return it.
     pub fn remove(&self, key: &T) -> Result<T, ()> {
-        let mut curr_guard = self.head.lock().unwrap();
-        let raw_ptr = *curr_guard;
-        if raw_ptr.is_null() {
-            return Err(());
-        }
-        while let Some(curr_node) = unsafe { (*curr_guard).as_ref() } {
-            match curr_node.data.cmp(key) {
-                cmp::Ordering::Less => {
+        let mut cursor = self.find(key);
+        match cursor.state {
+            CursorState::Insert => Err(()),
+            CursorState::Found => match unsafe { (*cursor.guard).as_ref() } {
+                Some(curr_node) => {
+                    let removed_node = unsafe { Box::from_raw(*cursor.guard) };
                     let next_guard = curr_node.next.lock().unwrap();
-                    curr_guard = next_guard;
+                    *cursor.guard = *next_guard;
+                    Ok(removed_node.data)
                 }
-                cmp::Ordering::Equal => {
-                    let removed_node = unsafe { Box::from_raw(*curr_guard) };
-                    let next_guard = curr_node.next.lock().unwrap();
-                    *curr_guard = *next_guard;
-                    return Ok(removed_node.data);
-                }
-                cmp::Ordering::Greater => return Err(()),
-            }
+                None => Err(()),
+            },
+            CursorState::Searching => unreachable!(),
         }
-        Err(())
     }
 }
 
@@ -165,6 +163,7 @@ impl<'l, T> Iterator for Iter<'l, T> {
         let node = match unsafe { guard.as_ref() } {
             Some(node) => node,
             None => {
+                // release the lock
                 self.0.take();
                 return None;
             }
@@ -181,6 +180,7 @@ impl<T> Drop for OrderedListSet<T> {
         let mut cursor = *self.head.lock().unwrap();
         while !cursor.is_null() {
             unsafe {
+                // using the Box to effectively drop the node
                 let node = Box::from_raw(cursor);
                 cursor = *node.next.lock().unwrap();
             }
