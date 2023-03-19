@@ -21,8 +21,17 @@ pub struct OrderedListSet<T> {
 unsafe impl<T: Send> Send for OrderedListSet<T> {}
 unsafe impl<T: Sync> Sync for OrderedListSet<T> {}
 
+enum CursorState {
+    Insert,
+    Found,
+    Searching,
+}
+
 // reference to the `next` field of previous node which points to the current node
-struct Cursor<'l, T>(MutexGuard<'l, *mut Node<T>>);
+struct Cursor<'l, T> {
+    state: CursorState,
+    cursor: MutexGuard<'l, *mut Node<T>>,
+}
 
 impl<T> Node<T> {
     fn new(data: T, next: *mut Self) -> *mut Self {
@@ -34,19 +43,38 @@ impl<T> Node<T> {
 }
 
 impl<'l, T: Ord> Cursor<'l, T> {
+    fn new(guard: MutexGuard<'l, *mut Node<T>>) -> Self {
+        Self {
+            state: CursorState::Searching,
+            cursor: guard,
+        }
+    }
+
+    fn found(guard: MutexGuard<'l, *mut Node<T>>) -> Self {
+        Self {
+            state: CursorState::Found,
+            cursor: guard,
+        }
+    }
+    fn inserting(guard: MutexGuard<'l, *mut Node<T>>) -> Self {
+        Self {
+            state: CursorState::Insert,
+            cursor: guard,
+        }
+    }
     /// Move the cursor to the position of key in the sorted list. If the key is found in the list,
     /// return `true`.
-    fn find(&mut self, key: &T) -> bool {
-        while let Some(node) = unsafe { (*self.0).as_ref() } {
+    fn find(mut self, key: &T) -> Cursor<'l, T> {
+        while let Some(node) = unsafe { (*self.cursor).as_ref() } {
             match node.data.cmp(key) {
-                cmp::Ordering::Greater => return false,
-                cmp::Ordering::Equal => return true,
+                cmp::Ordering::Greater => return Cursor::inserting(self.cursor),
+                cmp::Ordering::Equal => return Cursor::found(self.cursor),
                 cmp::Ordering::Less => {
-                    let _guard = std::mem::replace(&mut self.0, node.next.lock().unwrap());
+                    let _guard = std::mem::replace(&mut self.cursor, node.next.lock().unwrap());
                 }
             }
         }
-        false
+        Cursor::inserting(self.cursor)
     }
 }
 
@@ -60,16 +88,18 @@ impl<T> OrderedListSet<T> {
 }
 
 impl<T: Ord> OrderedListSet<T> {
-    fn find(&self, key: &T) -> (bool, Cursor<T>) {
+    fn find(&self, key: &T) -> Cursor<T> {
         let guard = self.head.lock().unwrap();
-        let mut cursor = Cursor(guard);
-        let result = cursor.find(key);
-        (result, cursor)
+        let mut cursor = Cursor::new(guard);
+        cursor.find(key)
     }
 
     /// Returns `true` if the set contains the key.
     pub fn contains(&self, key: &T) -> bool {
-        self.find(key).0
+        match self.find(key).state {
+            CursorState::Found => true,
+            _ => false,
+        }
     }
 
     /// Insert a key to the set. If the set already has the key, return the provided key in `Err`.
