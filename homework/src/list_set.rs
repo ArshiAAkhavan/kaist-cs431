@@ -59,10 +59,7 @@ impl<T> OrderedListSet<T> {
     }
 }
 
-impl<T: Ord> OrderedListSet<T>
-where
-    T: Debug,
-{
+impl<T: Ord> OrderedListSet<T> {
     fn find(&self, key: &T) -> (bool, Cursor<T>) {
         let guard = self.head.lock().unwrap();
         let mut cursor = Cursor(guard);
@@ -138,13 +135,18 @@ impl<T> OrderedListSet<T> {
     }
 }
 
-impl<'l, T> Iterator for Iter<'l, T>
-where T:Debug{
+impl<'l, T> Iterator for Iter<'l, T> {
     type Item = &'l T;
 
     fn next(&mut self) -> Option<Self::Item> {
         let guard = self.0.as_ref()?;
-        let node = unsafe { guard.as_ref() }?;
+        let node = match unsafe { guard.as_ref() } {
+            Some(node) => node,
+            None => {
+                self.0.take();
+                return None;
+            }
+        };
 
         self.0 = Some(node.next.lock().unwrap());
 
