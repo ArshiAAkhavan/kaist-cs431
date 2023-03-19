@@ -23,12 +23,12 @@ unsafe impl<T: Sync> Sync for OrderedListSet<T> {}
 
 /// state of the Cursor
 enum CursorState {
-    /// Cursor couldn't find the key but is holding the guard where you should insert the key 
+    /// Cursor couldn't find the key but is holding the guard where you should insert the key
     Insert,
     /// Cursor is holding the guard that contains the key
     Found,
     /// Cursor is still searching for the key
-    /// this state is interal and should not be used otherwise 
+    /// this state is interal and should not be used otherwise
     Searching,
 }
 
