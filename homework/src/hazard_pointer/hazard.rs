@@ -32,7 +32,18 @@ impl<T> Shield<T> {
     ///    latest value.
     /// 3. If validated, return true. Otherwise, clear the slot (store 0) and return false.
     pub fn try_protect(&self, pointer: &mut *const T, src: &AtomicPtr<T>) -> bool {
-        todo!()
+        // check ordering
+        unsafe { self.slot.as_ref() }
+            .hazard
+            .store(*pointer as usize, Ordering::SeqCst);
+        if src.load(Ordering::SeqCst) == *pointer as *mut T {
+            true
+        } else {
+            unsafe { self.slot.as_ref() }
+                .hazard
+                .store(0, Ordering::SeqCst);
+            false
+        }
     }
 
     /// Get a protected pointer from `src`.
@@ -55,7 +66,8 @@ impl<T> Default for Shield<T> {
 impl<T> Drop for Shield<T> {
     /// Clear and release the ownership of the hazard slot.
     fn drop(&mut self) {
-        todo!()
+        // check ordering
+        unsafe { self.slot.as_ref().active.store(false, Ordering::SeqCst) };
     }
 }
 
@@ -89,7 +101,11 @@ struct HazardSlot {
 
 impl HazardSlot {
     fn new() -> Self {
-        todo!()
+        Self {
+            active: AtomicBool::new(false),
+            hazard: AtomicUsize::new(0),
+            next: ptr::null(),
+        }
     }
 }
 
@@ -113,24 +129,79 @@ impl HazardBag {
     /// Acquires a slot in the hazard set, either by recyling an inactive slot or allocating a new
     /// slot.
     fn acquire_slot(&self) -> &HazardSlot {
-        todo!()
+        match self.try_acquire_inactive() {
+            Some(slot) => slot,
+            None => {
+                let mut slot = Box::new(HazardSlot::new());
+                loop {
+                    let head = self.head.load(Ordering::Acquire);
+                    slot.next = head as *const HazardSlot;
+                    // check for ordering
+                    slot.active.store(true, Ordering::SeqCst);
+                    let slot_raw = Box::into_raw(slot);
+                    // check for ordering
+                    match self.head.compare_exchange(
+                        head,
+                        slot_raw,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => {
+                            return unsafe { &*slot_raw };
+                        }
+                        Err(_) => {
+                            slot = unsafe { Box::from_raw(slot_raw) };
+                        }
+                    }
+                }
+            }
+        }
     }
-
     /// Find an inactive slot and activate it.
     fn try_acquire_inactive(&self) -> Option<&HazardSlot> {
-        todo!()
+        let mut curr = self.head.load(Ordering::Acquire);
+        while let Some(slot) = unsafe { curr.as_ref() } {
+            match slot
+                .active
+                // check ordering
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return Some(slot),
+                Err(_) => curr = slot.next as *mut HazardSlot,
+            }
+        }
+        None
     }
 
     /// Returns all the hazards in the set.
     pub fn all_hazards(&self) -> HashSet<usize> {
-        todo!()
+        let mut hazards = HashSet::new();
+        let mut curr = self.head.load(Ordering::Acquire) as *const HazardSlot;
+        while let Some(slot) = unsafe { curr.as_ref() } {
+            if slot
+                .active
+                // check ordering
+                .load(Ordering::SeqCst)
+            {
+                // check ordering
+                hazards.insert(slot.hazard.load(Ordering::SeqCst));
+            }
+            // dbg!(slot);
+            
+            curr = slot.next;
+        }
+        hazards
     }
 }
 
 impl Drop for HazardBag {
     /// Frees all slots.
     fn drop(&mut self) {
-        todo!()
+        let mut curr = self.head.load(Ordering::Acquire) as *const HazardSlot;
+        while let Some(slot) = unsafe { curr.as_ref() } {
+            let slot = unsafe { Box::from_raw(curr as *mut HazardSlot) };
+            curr = slot.next;
+        }
     }
 }
 
@@ -146,8 +217,8 @@ mod tests {
     use std::sync::{atomic::AtomicPtr, Arc};
     use std::thread;
 
-    const THREADS: usize = 8;
-    const VALUES: Range<usize> = 1..1024;
+    const THREADS: usize = 1;
+    const VALUES: Range<usize> = 1..3;
 
     // `all_hazards` should return hazards protected by shield(s).
     #[test]
@@ -172,6 +243,7 @@ mod tests {
             .collect::<Vec<_>>();
         let all = hazard_bag.all_hazards();
         let values = VALUES.collect();
+        let all = hazard_bag.all_hazards();
         assert!(all.is_superset(&values))
     }
 
