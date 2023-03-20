@@ -217,8 +217,8 @@ mod tests {
     use std::sync::{atomic::AtomicPtr, Arc};
     use std::thread;
 
-    const THREADS: usize = 1;
-    const VALUES: Range<usize> = 1..3;
+    const THREADS: usize = 8;
+    const VALUES: Range<usize> = 1..1024;
 
     // `all_hazards` should return hazards protected by shield(s).
     #[test]
