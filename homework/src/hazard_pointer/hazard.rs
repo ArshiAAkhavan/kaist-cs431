@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
 use std::collections::HashSet;
-use std::fmt;
+use std::{fmt, thread};
 
 #[cfg(not(feature = "check-loom"))]
 use core::sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicUsize, Ordering};
@@ -32,17 +32,19 @@ impl<T> Shield<T> {
     ///    latest value.
     /// 3. If validated, return true. Otherwise, clear the slot (store 0) and return false.
     pub fn try_protect(&self, pointer: &mut *const T, src: &AtomicPtr<T>) -> bool {
-        // check ordering
-        unsafe { self.slot.as_ref() }
-            .hazard
-            .store(*pointer as usize, Ordering::SeqCst);
-        if src.load(Ordering::SeqCst) == *pointer as *mut T {
-            true
-        } else {
-            unsafe { self.slot.as_ref() }
+        unsafe {
+            self.slot
+                .as_ref()
                 .hazard
-                .store(0, Ordering::SeqCst);
-            false
+                .store(*pointer as usize, Ordering::Release);
+            let new_ptr = src.load(Ordering::SeqCst) as *const T;
+            if new_ptr == *pointer {
+                true
+            } else {
+                self.slot.as_ref().hazard.store(0, Ordering::Relaxed);
+                *pointer = new_ptr;
+                false
+            }
         }
     }
 
@@ -66,8 +68,7 @@ impl<T> Default for Shield<T> {
 impl<T> Drop for Shield<T> {
     /// Clear and release the ownership of the hazard slot.
     fn drop(&mut self) {
-        // check ordering
-        unsafe { self.slot.as_ref().active.store(false, Ordering::SeqCst) };
+        unsafe { self.slot.as_ref().active.store(false, Ordering::SeqCst) }
     }
 }
 
@@ -133,13 +134,11 @@ impl HazardBag {
             Some(slot) => slot,
             None => {
                 let mut slot = Box::new(HazardSlot::new());
+                slot.active.store(true, Ordering::Relaxed);
                 loop {
                     let head = self.head.load(Ordering::Acquire);
-                    slot.next = head as *const HazardSlot;
-                    // check for ordering
-                    slot.active.store(true, Ordering::SeqCst);
+                    slot.next = head as *const _;
                     let slot_raw = Box::into_raw(slot);
-                    // check for ordering
                     match self.head.compare_exchange(
                         head,
                         slot_raw,
@@ -163,7 +162,6 @@ impl HazardBag {
         while let Some(slot) = unsafe { curr.as_ref() } {
             match slot
                 .active
-                // check ordering
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             {
                 Ok(_) => return Some(slot),
@@ -178,16 +176,13 @@ impl HazardBag {
         let mut hazards = HashSet::new();
         let mut curr = self.head.load(Ordering::Acquire) as *const HazardSlot;
         while let Some(slot) = unsafe { curr.as_ref() } {
-            if slot
-                .active
-                // check ordering
-                .load(Ordering::SeqCst)
-            {
-                // check ordering
-                hazards.insert(slot.hazard.load(Ordering::SeqCst));
+            if slot.active.load(Ordering::Relaxed) {
+                let raw = slot.hazard.load(Ordering::Relaxed);
+                if raw != 0 {
+                    hazards.insert(raw);
+                }
             }
-            // dbg!(slot);
-            
+
             curr = slot.next;
         }
         hazards
@@ -197,10 +192,10 @@ impl HazardBag {
 impl Drop for HazardBag {
     /// Frees all slots.
     fn drop(&mut self) {
-        let mut curr = self.head.load(Ordering::Acquire) as *const HazardSlot;
+        let mut curr = self.head.load(Ordering::Acquire);
         while let Some(slot) = unsafe { curr.as_ref() } {
             let slot = unsafe { Box::from_raw(curr as *mut HazardSlot) };
-            curr = slot.next;
+            curr = slot.next as *mut _;
         }
     }
 }

@@ -42,14 +42,25 @@ impl<'s> RetiredSet<'s> {
         unsafe fn free<T>(data: usize) {
             drop(Box::from_raw(data as *mut T))
         }
-
-        todo!()
+        self.inner.push((pointer as usize, free::<T>));
+        if self.inner.len() >= Self::THRESHOLD {
+            self.collect();
+        }
     }
 
     /// Free the pointers that are `retire`d by the current thread and not `protect`ed by any other
     /// threads.
     pub fn collect(&mut self) {
-        todo!()
+        let hazards = self.hazards.all_hazards();
+        let mut new_inner = Vec::new();
+        while let Some((p, free)) = self.inner.pop() {
+            if hazards.contains(&p) {
+                new_inner.push((p, free))
+            } else {
+                unsafe { (free)(p) }
+            }
+        }
+        let _ = std::mem::replace(&mut self.inner, new_inner);
     }
 }
 
