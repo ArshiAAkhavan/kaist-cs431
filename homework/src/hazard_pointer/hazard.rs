@@ -37,7 +37,8 @@ impl<T> Shield<T> {
                 .as_ref()
                 .hazard
                 .store(*pointer as usize, Ordering::Release);
-            let new_ptr = src.load(Ordering::SeqCst) as *const T;
+            fence(Ordering::SeqCst);
+            let new_ptr = src.load(Ordering::Acquire) as *const T;
             if new_ptr == *pointer {
                 true
             } else {
@@ -142,8 +143,8 @@ impl HazardBag {
                     match self.head.compare_exchange(
                         head,
                         slot_raw,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
                     ) {
                         Ok(_) => {
                             return unsafe { &*slot_raw };
@@ -162,7 +163,7 @@ impl HazardBag {
         while let Some(slot) = unsafe { curr.as_ref() } {
             match slot
                 .active
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             {
                 Ok(_) => return Some(slot),
                 Err(_) => curr = slot.next as *mut HazardSlot,
@@ -192,11 +193,13 @@ impl HazardBag {
 impl Drop for HazardBag {
     /// Frees all slots.
     fn drop(&mut self) {
+        // TODO
         let mut curr = self.head.load(Ordering::Acquire);
         while let Some(slot) = unsafe { curr.as_ref() } {
             let slot = unsafe { Box::from_raw(curr as *mut HazardSlot) };
             curr = slot.next as *mut _;
         }
+        // println!("");
     }
 }
 
