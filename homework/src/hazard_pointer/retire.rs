@@ -51,6 +51,7 @@ impl<'s> RetiredSet<'s> {
     /// Free the pointers that are `retire`d by the current thread and not `protect`ed by any other
     /// threads.
     pub fn collect(&mut self) {
+        fence(Ordering::SeqCst);
         let hazards = self.hazards.all_hazards();
         let mut new_inner = Vec::new();
         while let Some((p, free)) = self.inner.pop() {

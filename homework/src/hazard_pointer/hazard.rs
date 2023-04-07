@@ -36,16 +36,18 @@ impl<T> Shield<T> {
             self.slot
                 .as_ref()
                 .hazard
-                .store(*pointer as usize, Ordering::Release);
-            fence(Ordering::SeqCst);
-            let new_ptr = src.load(Ordering::Acquire) as *const T;
-            if new_ptr == *pointer {
-                true
-            } else {
+                .store(*pointer as usize, Ordering::Release)
+        };
+        fence(Ordering::SeqCst);
+        let new_ptr = src.load(Ordering::Relaxed) as *const T;
+        if new_ptr == *pointer {
+            true
+        } else {
+            unsafe {
                 self.slot.as_ref().hazard.store(0, Ordering::Relaxed);
-                *pointer = new_ptr;
-                false
             }
+            *pointer = new_ptr;
+            false
         }
     }
 
@@ -69,7 +71,7 @@ impl<T> Default for Shield<T> {
 impl<T> Drop for Shield<T> {
     /// Clear and release the ownership of the hazard slot.
     fn drop(&mut self) {
-        unsafe { self.slot.as_ref().active.store(false, Ordering::SeqCst) }
+        unsafe { self.slot.as_ref().active.store(false, Ordering::Release) }
     }
 }
 
@@ -144,7 +146,7 @@ impl HazardBag {
                         head,
                         slot_raw,
                         Ordering::AcqRel,
-                        Ordering::Acquire,
+                        Ordering::Relaxed,
                     ) {
                         Ok(_) => {
                             return unsafe { &*slot_raw };
@@ -163,7 +165,7 @@ impl HazardBag {
         while let Some(slot) = unsafe { curr.as_ref() } {
             match slot
                 .active
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             {
                 Ok(_) => return Some(slot),
                 Err(_) => curr = slot.next as *mut HazardSlot,
@@ -177,7 +179,7 @@ impl HazardBag {
         let mut hazards = HashSet::new();
         let mut curr = self.head.load(Ordering::Acquire) as *const HazardSlot;
         while let Some(slot) = unsafe { curr.as_ref() } {
-            if slot.active.load(Ordering::Relaxed) {
+            if slot.active.load(Ordering::Acquire) {
                 let raw = slot.hazard.load(Ordering::Relaxed);
                 if raw != 0 {
                     hazards.insert(raw);
@@ -193,13 +195,11 @@ impl HazardBag {
 impl Drop for HazardBag {
     /// Frees all slots.
     fn drop(&mut self) {
-        // TODO
         let mut curr = self.head.load(Ordering::Acquire);
         while let Some(slot) = unsafe { curr.as_ref() } {
             let slot = unsafe { Box::from_raw(curr as *mut HazardSlot) };
             curr = slot.next as *mut _;
         }
-        // println!("");
     }
 }
 
