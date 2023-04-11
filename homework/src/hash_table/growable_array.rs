@@ -5,7 +5,8 @@ use core::marker::PhantomData;
 use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crossbeam_epoch::{unprotected, Atomic, Guard, Owned, Pointer, Shared};
+use crossbeam_epoch::{self as epoch, unprotected, Atomic, Guard, Owned, Pointer, Shared};
+use epoch::CompareExchangeError;
 
 /// Growable array of `Atomic<T>`.
 ///
@@ -173,7 +174,26 @@ impl Debug for Segment {
 impl<T> Drop for GrowableArray<T> {
     /// Deallocate segments, but not the individual elements.
     fn drop(&mut self) {
-        todo!()
+        fn drop_segment(root_atomic: &Atomic<Segment>, guard: &Guard) {
+            let root = root_atomic.load(Ordering::Acquire, &guard);
+            let height = root.tag();
+            if height == 0 {
+                return;
+            }
+
+            let root = unsafe { root.into_owned() };
+            // leaf segment
+            if height == 1 {
+                return;
+            }
+            for index in &root.inner {
+                let segment = unsafe { &*((index) as *const _ as *const Atomic<Segment>) };
+                drop_segment(segment, guard);
+            }
+        }
+
+        let guard = &unsafe { epoch::unprotected() };
+        drop_segment(&self.root, guard);
     }
 }
 
@@ -192,9 +212,44 @@ impl<T> GrowableArray<T> {
         }
     }
 
+    // unsafe { &*(root_atomic as *const _ as *const Atomic<T>) }
     /// Returns the reference to the `Atomic` pointer at `index`. Allocates new segments if
     /// necessary.
     pub fn get(&self, mut index: usize, guard: &Guard) -> &Atomic<T> {
-        todo!()
+        let guard = &epoch::pin();
+        let mut root_atomic = &self.root;
+        loop {
+            let mut root = root_atomic.load(Ordering::Acquire, guard);
+            while index >= (1 << (root.tag() * SEGMENT_LOGSIZE)) {
+                let segment = Owned::new(Segment::new()).with_tag(root.tag() + 1);
+                unsafe {
+                    let atomic_index =
+                        &*((&segment.inner[0]) as *const _ as *const Atomic<Segment>);
+                    atomic_index.store(root, Ordering::Release);
+                }
+                root = match root_atomic.compare_exchange(
+                    root,
+                    segment,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                    guard,
+                ) {
+                    Ok(new) => new,
+                    Err(CompareExchangeError { current: c, .. }) => c,
+                }
+            }
+            if root.tag() == 0 && index == 0 {
+                return unsafe { &*(root_atomic as *const _ as *const Atomic<T>) };
+            }
+            let mut index_height = root.tag();
+
+            // root is not null
+            unsafe {
+                let atomic =
+                    &(*root.as_raw()).inner[index >> ((index_height - 1) * SEGMENT_LOGSIZE)];
+                root_atomic = &*(atomic as *const _ as *const Atomic<Segment>);
+            }
+            index = index % (1 << ((index_height - 1) * SEGMENT_LOGSIZE));
+        }
     }
 }
