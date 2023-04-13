@@ -4,6 +4,7 @@ use core::mem;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam_epoch::{self as epoch, Atomic, Guard, Owned, Shared};
 use cs431::lockfree::list::{Cursor, List, Node};
+use epoch::unprotected;
 
 use super::growable_array::GrowableArray;
 use crate::map::NonblockingMap;
@@ -22,12 +23,25 @@ pub struct SplitOrderedList<V> {
     /// number of items
     count: AtomicUsize,
 }
+type SplitOrderedKey = usize;
 
 impl<V> Default for SplitOrderedList<V> {
     fn default() -> Self {
+        let list = List::new();
+        let buckets = GrowableArray::new();
+        let guard = unsafe { &unprotected() };
+
+        //todo sync between bucket pointer and actuall node in the list
+
+        list.harris_herlihy_shavit_insert(0, None, guard);
+        let mut cursor = list.head(guard);
+        let _ = cursor.find_harris_herlihy_shavit(&0, guard);
+        let bucket_zero = buckets.get(0, guard);
+        bucket_zero.store(cursor.curr(), Ordering::Release);
+
         Self {
-            list: List::new(),
-            buckets: GrowableArray::new(),
+            list,
+            buckets,
             size: AtomicUsize::new(2),
             count: AtomicUsize::new(0),
         }
@@ -46,35 +60,73 @@ impl<V> SplitOrderedList<V> {
     /// Creates a cursor and moves it to the bucket for the given index.  If the bucket doesn't
     /// exist, recursively initializes the buckets.
     fn lookup_bucket<'s>(&'s self, index: usize, guard: &'s Guard) -> Cursor<'s, usize, Option<V>> {
-        let bucket_key = index % (1 << self.size.load(Ordering::Acquire));
-        let mut bucket_raw = self.buckets.get(bucket_key, guard);
+        let size = self.size.load(Ordering::Acquire);
+        let bucket = index % size;
+        let so_bucket_key = self.get_so_bucket_key(bucket);
+
+        let mut bucket_raw = self.buckets.get(bucket, guard);
         let node_raw = bucket_raw.load(Ordering::Acquire, &guard);
-        if node_raw.is_null() {
-            let mut curr = self.lookup_bucket(
-                index % (1 << (self.size.load(Ordering::Acquire) - 1)),
-                guard,
-            );
-            let found = curr
-                .find_harris_herlihy_shavit(&(index % (self.size.load(Ordering::Acquire))), guard)
-                .unwrap();
-
-            let mut n = Owned::new(Node::new(
-                index % (1 << (self.size.load(Ordering::Acquire) - 1)),
-                None,
-            ));
-            loop {
-                n = match curr.insert(n, guard) {
-                    Ok(_) => break,
-                    Err(n) => n,
-                };
-            }
-            self.lookup_bucket(index, guard)
-        } else {
-            let x = AtomicUsize::new(0);
-            let y = unsafe { &*(&x as *const _ as *const Atomic<Node<usize, Option<V>>>) };
-
-            Cursor::new(y, node_raw)
+        match node_raw.is_null() {
+            true => self.make_bucket(bucket, size, guard),
+            false => Cursor::new(bucket_raw, node_raw),
         }
+    }
+    fn make_bucket<'s>(
+        &'s self,
+        bucket: usize,
+        size: usize,
+        guard: &'s Guard,
+    ) -> Cursor<'s, usize, Option<V>> {
+        let parent = self.get_parent_bucket(bucket);
+        let parent_raw = self.buckets.get(parent, guard);
+        let node_raw = parent_raw.load(Ordering::Acquire, &guard);
+        if node_raw.is_null() {
+            self.make_bucket(parent, size, guard);
+        }
+        self.insert_bucket(Cursor::new(parent_raw, node_raw), bucket, guard)
+    }
+
+    fn get_parent_bucket(&self, bucket: usize) -> usize {
+        if bucket == 1 {
+            return 0;
+        }
+        let x = bucket.reverse_bits();
+        let y = bucket.leading_zeros() + 1;
+        let (z, _) = x.overflowing_shr(y);
+        let w = z.reverse_bits();
+        w
+    }
+
+    fn insert_bucket<'s>(
+        &'s self,
+        mut parent: Cursor<'s, usize, Option<V>>,
+        bucket: usize,
+        guard: &'s Guard,
+    ) -> Cursor<'s, usize, Option<V>> {
+        let mut node = Owned::new(Node::new(self.get_so_bucket_key(bucket), None));
+        loop {
+            let found = parent
+                .find_harris_herlihy_shavit(&self.get_so_bucket_key(bucket), guard)
+                .unwrap();
+            if found {
+                return parent;
+            }
+            match parent.insert(node, guard) {
+                Ok(_) => break,
+                Err(n) => node = n,
+            }
+        }
+        parent
+    }
+
+    #[inline]
+    fn get_so_bucket_key(&self, key: usize) -> SplitOrderedKey {
+        key.reverse_bits()
+    }
+
+    #[inline]
+    fn get_so_data_key(&self, key: usize) -> SplitOrderedKey {
+        key.reverse_bits() | 1
     }
 
     /// Moves the bucket cursor returned from `lookup_bucket` to the position of the given key.
@@ -84,8 +136,11 @@ impl<V> SplitOrderedList<V> {
         key: &usize,
         guard: &'s Guard,
     ) -> (usize, bool, Cursor<'s, usize, Option<V>>) {
-        // let bucket_curr=self.lookup_bucket(index, guard)
-        todo!()
+        let mut bucket_cusor = self.lookup_bucket(*key, guard);
+        let found = bucket_cusor
+            .find_harris(&self.get_so_data_key(*key), guard)
+            .unwrap();
+        (self.size.load(Ordering::Acquire), found, bucket_cusor)
     }
 
     fn assert_valid_key(key: usize) {
