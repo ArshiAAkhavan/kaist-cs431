@@ -54,7 +54,7 @@ impl<V: Debug> Debug for SplitOrderedList<V> {
                     .unwrap();
                 writeln!(
                     f,
-                    "{}:\t {:0>64}->",
+                    "{}:\t {:0>64}->{next}",
                     ((key >> 1) << 1).reverse_bits(),
                     format_args!("{key:b}")
                 )?;
@@ -117,18 +117,13 @@ impl<V> SplitOrderedList<V> {
 
         let mut bucket_raw = self.buckets.get(bucket, guard);
         let node_raw = bucket_raw.load(Ordering::Acquire, guard);
-        match node_raw.is_null() {
-            true => self.make_bucket(bucket, size, guard),
-            false => Cursor::new(bucket_raw, node_raw),
+        if node_raw.is_null() {
+            self.make_bucket(bucket, size, guard);
         }
+        self.get_cursor_to_bucket(bucket, guard)
     }
 
-    fn make_bucket<'s>(
-        &'s self,
-        bucket: usize,
-        size: usize,
-        guard: &'s Guard,
-    ) -> Cursor<'s, usize, Option<V>> {
+    fn make_bucket<'s>(&'s self, bucket: usize, size: usize, guard: &'s Guard) {
         let parent = self.get_parent_bucket(bucket);
         let parent_raw = self.buckets.get(parent, guard);
         let node_raw = parent_raw.load(Ordering::Acquire, guard);
@@ -136,16 +131,34 @@ impl<V> SplitOrderedList<V> {
             self.make_bucket(parent, size, guard);
         }
 
-        let node_raw = parent_raw.load(Ordering::Acquire, guard);
-        let cursor = self.insert_bucket(Cursor::new(parent_raw, node_raw), bucket, guard);
+        let cursor = self.get_cursor_to_bucket(parent, guard);
+        let cursor = self.insert_bucket(cursor, bucket, guard);
 
-        let bucket = self.buckets.get(bucket, guard);
-        let bucket_raw = bucket.load(Ordering::Acquire, guard);
+        let bucket_atomic = self.buckets.get(bucket, guard);
+        let bucket_raw = bucket_atomic.load(Ordering::Acquire, guard);
         match bucket_raw.is_null() {
-            true => bucket.store(cursor.curr(), Ordering::Release),
+            true => bucket_atomic.store(cursor.curr(), Ordering::Release),
             false => {}
         }
+    }
 
+    fn get_cursor_to_bucket<'g>(
+        &'g self,
+        bucket: usize,
+        guard: &'g Guard,
+    ) -> Cursor<'g, usize, Option<V>> {
+        let bucket_raw = self.buckets.get(bucket, guard);
+        let node_raw = bucket_raw.load(Ordering::Acquire, guard);
+        let cursor = Cursor::new(bucket_raw, node_raw);
+        let cursor = Self::forward_cursor(cursor, Self::get_so_bucket_key(bucket), guard);
+        cursor
+    }
+    fn forward_cursor<'g>(
+        mut cursor: Cursor<'g, usize, Option<V>>,
+        key: usize,
+        guard: &'g Guard,
+    ) -> Cursor<'g, usize, Option<V>> {
+        let _ = cursor.find_harris_herlihy_shavit(&(key + 1), guard);
         cursor
     }
 
@@ -163,7 +176,6 @@ impl<V> SplitOrderedList<V> {
         guard: &'s Guard,
     ) -> Cursor<'s, usize, Option<V>> {
         let bucket_key = Self::get_so_bucket_key(bucket);
-        // println!("{bucket_key:b}");
         let mut node = Owned::new(Node::new(bucket_key, None));
         loop {
             let found = cursor
