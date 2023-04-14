@@ -150,8 +150,7 @@ impl<V> SplitOrderedList<V> {
         let bucket_raw = self.buckets.get(bucket, guard);
         let node_raw = bucket_raw.load(Ordering::Acquire, guard);
         let cursor = Cursor::new(bucket_raw, node_raw);
-        let cursor = Self::forward_cursor(cursor, Self::get_so_bucket_key(bucket), guard);
-        cursor
+        Self::forward_cursor(cursor, Self::get_so_bucket_key(bucket), guard)
     }
     fn forward_cursor<'g>(
         mut cursor: Cursor<'g, usize, Option<V>>,

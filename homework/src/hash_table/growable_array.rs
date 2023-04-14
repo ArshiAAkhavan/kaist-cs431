@@ -220,9 +220,7 @@ impl<T> GrowableArray<T> {
         let mut root_atomic = &self.root;
         loop {
             let mut root = root_atomic.load(Ordering::Acquire, guard);
-            while (root.tag() * SEGMENT_LOGSIZE) < mem::size_of::<usize>()
-                && index >= (1 << (root.tag() * SEGMENT_LOGSIZE))
-            {
+            while index >= (1 << (root.tag() * SEGMENT_LOGSIZE)) {
                 let segment = Owned::new(Segment::new()).with_tag(root.tag() + 1);
                 unsafe {
                     let atomic_index =
