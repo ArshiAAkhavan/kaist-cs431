@@ -48,6 +48,35 @@ pub fn fire() {
 }
 
 #[test]
+pub fn buckets() {
+    let list = SplitOrderedList::<usize>::new();
+    println!("{list:?}");
+
+    let guard = epoch::pin();
+    assert_eq!(list.insert(&0, 0, &guard), Ok(()));
+    assert_eq!(list.insert(&1, 1, &guard), Ok(()));
+    assert_eq!(list.insert(&2, 2, &guard), Ok(()));
+    assert_eq!(list.insert(&3, 3, &guard), Ok(()));
+    assert_eq!(list.insert(&4, 4, &guard), Ok(()));
+    assert_eq!(list.insert(&6, 6, &guard), Ok(()));
+    assert_eq!(list.insert(&8, 8, &guard), Ok(()));
+    println!("{list:?}");
+    assert_eq!(list.insert(&10, 10, &guard), Ok(()));
+    assert_eq!(list.insert(&14, 14, &guard), Ok(()));
+    // list.lookup_bucket(6, &guard);
+    println!("{list:?}");
+    // list.lookup_bucket(5, &guard);
+    println!("{list:?}");
+    // list.lookup_bucket(4, &guard);
+    println!("{list:?}");
+    // assert_eq!(list.insert(&11, 11, &guard), Ok(()));
+    // list.lookup_bucket(3, &guard);
+    assert_eq!(list.insert(&7, 7, &guard), Ok(()));
+    // list.lookup_bucket(7, &guard);
+    println!("{list:?}");
+}
+
+#[test]
 fn stress_sequential() {
     const STEPS: usize = 4096;
     map::stress_concurrent_sequential::<

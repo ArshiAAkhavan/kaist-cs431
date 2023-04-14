@@ -34,7 +34,7 @@ impl<V: Debug> Debug for SplitOrderedList<V> {
             while let Some(node) = cursor.curr().as_ref() {
                 let key = format!("{node:#?}")
                     .lines()
-                    .nth(6)
+                    .nth(5)
                     .unwrap()
                     .replace('\"', "")
                     .replace(',', "")
@@ -44,7 +44,7 @@ impl<V: Debug> Debug for SplitOrderedList<V> {
                     .unwrap();
                 let next = format!("{node:#?}")
                     .lines()
-                    .nth(3)
+                    .nth(2)
                     .unwrap()
                     .replace('\"', "")
                     .replace(',', "")
@@ -135,6 +135,8 @@ impl<V> SplitOrderedList<V> {
         if node_raw.is_null() {
             self.make_bucket(parent, size, guard);
         }
+
+        let node_raw = parent_raw.load(Ordering::Acquire, guard);
         let cursor = self.insert_bucket(Cursor::new(parent_raw, node_raw), bucket, guard);
 
         let bucket = self.buckets.get(bucket, guard);
