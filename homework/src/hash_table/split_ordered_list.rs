@@ -120,7 +120,7 @@ impl<V> SplitOrderedList<V> {
         if node_raw.is_null() {
             self.make_bucket(bucket, size, guard);
         }
-        self.get_cursor_to_bucket(bucket, guard)
+        self.get_cursor_to_bucket(bucket,bucket_raw, guard)
     }
 
     fn make_bucket<'s>(&'s self, bucket: usize, size: usize, guard: &'s Guard) {
@@ -131,7 +131,7 @@ impl<V> SplitOrderedList<V> {
             self.make_bucket(parent, size, guard);
         }
 
-        let cursor = self.get_cursor_to_bucket(parent, guard);
+        let cursor = self.get_cursor_to_bucket(parent,parent_raw, guard);
         self.insert_bucket(cursor, bucket, guard);
     }
 
@@ -143,12 +143,7 @@ impl<V> SplitOrderedList<V> {
     ) {
         let bucket_key = Self::get_so_bucket_key(bucket);
         let mut node = Owned::new(Node::new(bucket_key, None));
-        let mut i = 0;
         loop {
-            i += 1;
-            if i % 1000 == 0 {
-                println!("inloop");
-            }
             let mut cursor = cursor.clone();
             let bucket_atomic = self.buckets.get(bucket, guard);
             let bucket_raw = bucket_atomic.load(Ordering::Acquire, guard);
@@ -172,22 +167,17 @@ impl<V> SplitOrderedList<V> {
         }
     }
 
+
+    #[inline]
     fn get_cursor_to_bucket<'g>(
         &'g self,
         bucket: usize,
+        bucket_raw: &'g Atomic<Node<usize, Option<V>>>,
         guard: &'g Guard,
     ) -> Cursor<'g, usize, Option<V>> {
-        let bucket_raw = self.buckets.get(bucket, guard);
         let node_raw = bucket_raw.load(Ordering::Acquire, guard);
-        let cursor = Cursor::new(bucket_raw, node_raw);
-        Self::forward_cursor(cursor, Self::get_so_bucket_key(bucket), guard)
-    }
-    fn forward_cursor<'g>(
-        mut cursor: Cursor<'g, usize, Option<V>>,
-        key: usize,
-        guard: &'g Guard,
-    ) -> Cursor<'g, usize, Option<V>> {
-        let _ = cursor.find_harris_herlihy_shavit(&(key + 1), guard);
+        let mut cursor = Cursor::new(bucket_raw, node_raw);
+        let _ = cursor.find_harris_herlihy_shavit(&(Self::get_so_bucket_key(bucket)+ 1), guard);
         cursor
     }
 
@@ -208,18 +198,14 @@ impl<V> SplitOrderedList<V> {
 
     /// Moves the bucket cursor returned from `lookup_bucket` to the position of the given key.
     /// Returns `(size, found, cursor)`
-    fn find<'s>(
-        &'s self,
-        key: &usize,
-        guard: &'s Guard,
-    ) -> (usize, bool, Cursor<'s, usize, Option<V>>) {
+    fn find<'s>(&'s self, key: &usize, guard: &'s Guard) -> (bool, Cursor<'s, usize, Option<V>>) {
         let mut bucket_cursor = self.lookup_bucket(*key, guard);
 
         let found = bucket_cursor
             .find_harris_michael(&Self::get_so_data_key(*key), guard)
             .unwrap_or(false);
 
-        (self.size.load(Ordering::Relaxed), found, bucket_cursor)
+        (found, bucket_cursor)
     }
 
     /// Moves the bucket cursor returned from `lookup_bucket` to the position of the given key.
@@ -228,7 +214,7 @@ impl<V> SplitOrderedList<V> {
         &'s self,
         key: &usize,
         guard: &'s Guard,
-    ) -> (usize, bool, Cursor<'s, usize, Option<V>>) {
+    ) -> (bool, Cursor<'s, usize, Option<V>>) {
         let mut bucket_cursor = self.lookup_bucket(*key, guard);
 
         let found = 
@@ -240,7 +226,7 @@ impl<V> SplitOrderedList<V> {
                 .unwrap_unchecked()
         };
 
-        (self.size.load(Ordering::Relaxed), found, bucket_cursor)
+        (found, bucket_cursor)
     }
 
     fn assert_valid_key(key: usize) {
@@ -251,7 +237,7 @@ impl<V> SplitOrderedList<V> {
 impl<V> NonblockingMap<usize, V> for SplitOrderedList<V> {
     fn lookup<'a>(&'a self, key: &usize, guard: &'a Guard) -> Option<&'a V> {
         Self::assert_valid_key(*key);
-        let (_, found, cursor) = self.fast_find(key, guard) ;
+        let (found, cursor) = self.fast_find(key, guard);
         match found {
             true => cursor.lookup()?.into(),
             false => None,
@@ -260,7 +246,7 @@ impl<V> NonblockingMap<usize, V> for SplitOrderedList<V> {
 
     fn insert(&self, key: &usize, value: V, guard: &Guard) -> Result<(), V> {
         Self::assert_valid_key(*key);
-        let (size, found, mut cursor) = self.fast_find(key, guard);
+        let (found, mut cursor) = self.fast_find(key, guard);
         if found {
             return Err(value);
         }
@@ -288,7 +274,7 @@ impl<V> NonblockingMap<usize, V> for SplitOrderedList<V> {
 
     fn delete<'a>(&'a self, key: &usize, guard: &'a Guard) -> Result<&'a V, ()> {
         Self::assert_valid_key(*key);
-        let (size, found, cursor) = self.find(key, guard);
+        let (found, cursor) = self.find(key, guard);
         if !found {
             return Err(());
         }
