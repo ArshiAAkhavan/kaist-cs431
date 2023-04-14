@@ -13,6 +13,7 @@ use crate::map::NonblockingMap;
 /// Lock-free map from `usize` in range [0, 2^63-1] to `V`.
 ///
 /// NOTE: We don't care about hashing in this homework for simplicity.
+#[derive(Debug)]
 pub struct SplitOrderedList<V> {
     /// Lock-free list sorted by recursive-split order. Use `None` sentinel node value.
     list: List<usize, Option<V>>,
@@ -22,51 +23,6 @@ pub struct SplitOrderedList<V> {
     size: AtomicUsize,
     /// number of items
     count: AtomicUsize,
-}
-
-impl<V: Debug> Debug for SplitOrderedList<V> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let guard = &epoch::pin();
-        let mut cursor = self.list.head(guard);
-        unsafe {
-            let prev =
-                &*(&AtomicUsize::new(0) as *const _ as *const Atomic<Node<usize, Option<V>>>);
-            while let Some(node) = cursor.curr().as_ref() {
-                let key = format!("{node:#?}")
-                    .lines()
-                    .nth(5)
-                    .unwrap()
-                    .replace('\"', "")
-                    .replace(',', "")
-                    .replace("key:", "")
-                    .trim()
-                    .parse::<u64>()
-                    .unwrap();
-                let next = format!("{node:#?}")
-                    .lines()
-                    .nth(2)
-                    .unwrap()
-                    .replace('\"', "")
-                    .replace(',', "")
-                    .replace("raw:", "")
-                    .trim()
-                    .parse::<u64>()
-                    .unwrap();
-                writeln!(
-                    f,
-                    "{}:\t {:0>64}->{next}",
-                    ((key >> 1) << 1).reverse_bits(),
-                    format_args!("{key:b}")
-                )?;
-                if next == 0 {
-                    break;
-                }
-                let next = Owned::from_raw(next as *mut Node<usize, Option<V>>);
-                cursor = Cursor::new(prev, next.into_shared(guard));
-            }
-            Ok(())
-        }
-    }
 }
 
 type SplitOrderedKey = usize;
@@ -116,22 +72,22 @@ impl<V> SplitOrderedList<V> {
         let bucket = index % size;
 
         let mut bucket_raw = self.buckets.get(bucket, guard);
-        let node_raw = bucket_raw.load(Ordering::Acquire, guard);
+        let node_raw = bucket_raw.load(Ordering::Relaxed, guard);
         if node_raw.is_null() {
             self.make_bucket(bucket, size, guard);
         }
-        self.get_cursor_to_bucket(bucket,bucket_raw, guard)
+        self.get_cursor_to_bucket(bucket, bucket_raw, guard)
     }
 
     fn make_bucket<'s>(&'s self, bucket: usize, size: usize, guard: &'s Guard) {
         let parent = self.get_parent_bucket(bucket);
         let parent_raw = self.buckets.get(parent, guard);
-        let node_raw = parent_raw.load(Ordering::Acquire, guard);
+        let node_raw = parent_raw.load(Ordering::Relaxed, guard);
         if node_raw.is_null() {
             self.make_bucket(parent, size, guard);
         }
 
-        let cursor = self.get_cursor_to_bucket(parent,parent_raw, guard);
+        let cursor = self.get_cursor_to_bucket(parent, parent_raw, guard);
         self.insert_bucket(cursor, bucket, guard);
     }
 
@@ -146,7 +102,7 @@ impl<V> SplitOrderedList<V> {
         loop {
             let mut cursor = cursor.clone();
             let bucket_atomic = self.buckets.get(bucket, guard);
-            let bucket_raw = bucket_atomic.load(Ordering::Acquire, guard);
+            let bucket_raw = bucket_atomic.load(Ordering::Relaxed, guard);
             if !bucket_raw.is_null() {
                 return;
             }
@@ -159,14 +115,13 @@ impl<V> SplitOrderedList<V> {
             }
             match cursor.insert(node, guard) {
                 Ok(_) => {
-                    bucket_atomic.store(cursor.curr(), Ordering::Release);
+                    bucket_atomic.store(cursor.curr(), Ordering::Relaxed);
                     break;
                 }
                 Err(n) => node = n,
             }
         }
     }
-
 
     #[inline]
     fn get_cursor_to_bucket<'g>(
@@ -175,9 +130,9 @@ impl<V> SplitOrderedList<V> {
         bucket_raw: &'g Atomic<Node<usize, Option<V>>>,
         guard: &'g Guard,
     ) -> Cursor<'g, usize, Option<V>> {
-        let node_raw = bucket_raw.load(Ordering::Acquire, guard);
+        let node_raw = bucket_raw.load(Ordering::Relaxed, guard);
         let mut cursor = Cursor::new(bucket_raw, node_raw);
-        let _ = cursor.find_harris_herlihy_shavit(&(Self::get_so_bucket_key(bucket)+ 1), guard);
+        let _ = cursor.find_harris_herlihy_shavit(&(Self::get_so_bucket_key(bucket) + 1), guard);
         cursor
     }
 
@@ -217,11 +172,10 @@ impl<V> SplitOrderedList<V> {
     ) -> (bool, Cursor<'s, usize, Option<V>>) {
         let mut bucket_cursor = self.lookup_bucket(*key, guard);
 
-        let found = 
         // SAFETY: we know when harris, herlihy and shavit get together, there is no force strong
         // enough to make them panic!
-        unsafe {
-             bucket_cursor
+        let found = unsafe {
+            bucket_cursor
                 .find_harris_herlihy_shavit(&Self::get_so_data_key(*key), guard)
                 .unwrap_unchecked()
         };
