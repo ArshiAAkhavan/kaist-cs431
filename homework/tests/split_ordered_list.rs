@@ -27,6 +27,27 @@ pub fn smoke() {
 }
 
 #[test]
+pub fn fire() {
+    let list = SplitOrderedList::<usize>::new();
+    println!("{list:?}");
+
+    let guard = epoch::pin();
+
+    assert_eq!(list.insert(&9, 9, &guard), Ok(()));
+    println!("{list:?}");
+    assert_eq!(list.insert(&8, 8, &guard), Ok(()));
+    println!("{list:?}");
+    assert_eq!(list.insert(&13, 13, &guard), Ok(()));
+    println!("{list:?}");
+    assert_eq!(list.insert(&5, 5, &guard), Ok(()));
+    println!("{list:?}");
+    assert_eq!(list.insert(&7, 7, &guard), Ok(()));
+    println!("{list:?}");
+    assert_eq!(list.lookup(&7, &guard), Some(&7));
+    println!("{list:?}");
+}
+
+#[test]
 fn stress_sequential() {
     const STEPS: usize = 4096;
     map::stress_concurrent_sequential::<

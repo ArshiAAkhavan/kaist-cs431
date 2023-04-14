@@ -175,7 +175,7 @@ impl<T> Drop for GrowableArray<T> {
     /// Deallocate segments, but not the individual elements.
     fn drop(&mut self) {
         fn drop_segment(root_atomic: &Atomic<Segment>, guard: &Guard) {
-            let root = root_atomic.load(Ordering::Acquire, &guard);
+            let root = root_atomic.load(Ordering::Acquire, guard);
             let height = root.tag();
             if height == 0 {
                 return;
@@ -220,7 +220,9 @@ impl<T> GrowableArray<T> {
         let mut root_atomic = &self.root;
         loop {
             let mut root = root_atomic.load(Ordering::Acquire, guard);
-            while index >= (1 << (root.tag() * SEGMENT_LOGSIZE)) {
+            while (root.tag() * SEGMENT_LOGSIZE) < mem::size_of::<usize>()
+                && index >= (1 << (root.tag() * SEGMENT_LOGSIZE))
+            {
                 let segment = Owned::new(Segment::new()).with_tag(root.tag() + 1);
                 unsafe {
                     let atomic_index =
@@ -249,7 +251,7 @@ impl<T> GrowableArray<T> {
                     &(*root.as_raw()).inner[index >> ((index_height - 1) * SEGMENT_LOGSIZE)];
                 root_atomic = &*(atomic as *const _ as *const Atomic<Segment>);
             }
-            index = index % (1 << ((index_height - 1) * SEGMENT_LOGSIZE));
+            index %= 1 << ((index_height - 1) * SEGMENT_LOGSIZE);
         }
     }
 }
