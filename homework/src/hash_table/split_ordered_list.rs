@@ -38,14 +38,14 @@ impl<V> Default for SplitOrderedList<V> {
         let mut cursor = list.head(guard);
         let _ = cursor.find_harris_herlihy_shavit(&0, guard);
         let bucket_zero = buckets.get(0, guard);
-        bucket_zero.store(cursor.curr(), Ordering::Relaxed);
+        bucket_zero.store(cursor.curr(), Ordering::Release);
 
         // 1 dummy node
         list.harris_herlihy_shavit_insert(Self::get_so_bucket_key(1), None, guard);
         let mut cursor = list.head(guard);
         let _ = cursor.find_harris_herlihy_shavit(&Self::get_so_bucket_key(1), guard);
         let bucket_one = buckets.get(1, guard);
-        bucket_one.store(cursor.curr(), Ordering::Relaxed);
+        bucket_one.store(cursor.curr(), Ordering::Release);
 
         Self {
             list,
@@ -72,7 +72,7 @@ impl<V> SplitOrderedList<V> {
         let bucket = index % size;
 
         let mut bucket_raw = self.buckets.get(bucket, guard);
-        let node_raw = bucket_raw.load(Ordering::Relaxed, guard);
+        let node_raw = bucket_raw.load(Ordering::Acquire, guard);
         if node_raw.is_null() {
             self.make_bucket(bucket, size, guard);
         }
@@ -82,7 +82,7 @@ impl<V> SplitOrderedList<V> {
     fn make_bucket<'s>(&'s self, bucket: usize, size: usize, guard: &'s Guard) {
         let parent = self.get_parent_bucket(bucket);
         let parent_raw = self.buckets.get(parent, guard);
-        let node_raw = parent_raw.load(Ordering::Relaxed, guard);
+        let node_raw = parent_raw.load(Ordering::Acquire, guard);
         if node_raw.is_null() {
             self.make_bucket(parent, size, guard);
         }
@@ -100,22 +100,23 @@ impl<V> SplitOrderedList<V> {
         let bucket_key = Self::get_so_bucket_key(bucket);
         let mut node = Owned::new(Node::new(bucket_key, None));
         loop {
-            let mut cursor = cursor.clone();
             let bucket_atomic = self.buckets.get(bucket, guard);
-            let bucket_raw = bucket_atomic.load(Ordering::Relaxed, guard);
+            let bucket_raw = bucket_atomic.load(Ordering::Acquire, guard);
             if !bucket_raw.is_null() {
+                let _ = node.into_box();
                 return;
             }
 
             if cursor
-                .find_harris_herlihy_shavit(&bucket_key, guard)
-                .unwrap()
+                .find_harris_michael(&bucket_key, guard)
+                .unwrap_or(false)
             {
+                let _ = node.into_box();
                 return;
             }
             match cursor.insert(node, guard) {
                 Ok(_) => {
-                    bucket_atomic.store(cursor.curr(), Ordering::Relaxed);
+                    bucket_atomic.store(cursor.curr(), Ordering::Release);
                     break;
                 }
                 Err(n) => node = n,
@@ -130,9 +131,9 @@ impl<V> SplitOrderedList<V> {
         bucket_raw: &'g Atomic<Node<usize, Option<V>>>,
         guard: &'g Guard,
     ) -> Cursor<'g, usize, Option<V>> {
-        let node_raw = bucket_raw.load(Ordering::Relaxed, guard);
+        let node_raw = bucket_raw.load(Ordering::Acquire, guard);
         let mut cursor = Cursor::new(bucket_raw, node_raw);
-        let _ = cursor.find_harris_herlihy_shavit(&(Self::get_so_bucket_key(bucket) + 1), guard);
+        let _ = cursor.find_harris_michael(&(Self::get_so_bucket_key(bucket) + 1), guard);
         cursor
     }
 
@@ -163,26 +164,6 @@ impl<V> SplitOrderedList<V> {
         (found, bucket_cursor)
     }
 
-    /// Moves the bucket cursor returned from `lookup_bucket` to the position of the given key.
-    /// Returns `(size, found, cursor)` but does it fast!
-    fn fast_find<'s>(
-        &'s self,
-        key: &usize,
-        guard: &'s Guard,
-    ) -> (bool, Cursor<'s, usize, Option<V>>) {
-        let mut bucket_cursor = self.lookup_bucket(*key, guard);
-
-        // SAFETY: we know when harris, herlihy and shavit get together, there is no force strong
-        // enough to make them panic!
-        let found = unsafe {
-            bucket_cursor
-                .find_harris_herlihy_shavit(&Self::get_so_data_key(*key), guard)
-                .unwrap_unchecked()
-        };
-
-        (found, bucket_cursor)
-    }
-
     fn assert_valid_key(key: usize) {
         assert!(key.leading_zeros() != 0);
     }
@@ -191,7 +172,7 @@ impl<V> SplitOrderedList<V> {
 impl<V> NonblockingMap<usize, V> for SplitOrderedList<V> {
     fn lookup<'a>(&'a self, key: &usize, guard: &'a Guard) -> Option<&'a V> {
         Self::assert_valid_key(*key);
-        let (found, cursor) = self.fast_find(key, guard);
+        let (found, cursor) = self.find(key, guard);
         match found {
             true => cursor.lookup()?.into(),
             false => None,
@@ -200,13 +181,12 @@ impl<V> NonblockingMap<usize, V> for SplitOrderedList<V> {
 
     fn insert(&self, key: &usize, value: V, guard: &Guard) -> Result<(), V> {
         Self::assert_valid_key(*key);
-        let (found, mut cursor) = self.fast_find(key, guard);
+        let (found, mut cursor) = self.find(key, guard);
         if found {
             return Err(value);
         }
 
         let mut node = Owned::new(Node::new(Self::get_so_data_key(*key), Some(value)));
-        let _ = cursor.find_harris_herlihy_shavit(&Self::get_so_data_key(*key), guard);
         match cursor.insert(node, guard) {
             Ok(_) => {
                 let prev_count = self.count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -220,10 +200,10 @@ impl<V> NonblockingMap<usize, V> for SplitOrderedList<V> {
                         Ordering::Relaxed,
                     );
                 }
+                Ok(())
             }
-            Err(n) => return Err((*n.into_box()).into_value().unwrap()),
+            Err(n) => Err(n.into_box().into_value().unwrap()),
         }
-        Ok(())
     }
 
     fn delete<'a>(&'a self, key: &usize, guard: &'a Guard) -> Result<&'a V, ()> {
@@ -232,11 +212,12 @@ impl<V> NonblockingMap<usize, V> for SplitOrderedList<V> {
         if !found {
             return Err(());
         }
-        if let Ok(v) = cursor.delete(guard) {
-            self.count.fetch_sub(1, Ordering::Relaxed);
-            v.as_ref().ok_or(())
-        } else {
-            Err(())
+        match cursor.delete(guard) {
+            Ok(v) => {
+                self.count.fetch_sub(1, Ordering::Relaxed);
+                v.as_ref().ok_or(())
+            }
+            Err(_) => Err(()),
         }
     }
 }

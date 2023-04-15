@@ -22,8 +22,8 @@ RUNNERS=(
     "cargo"
     "cargo --release"
     "cargo_asan"
-    "cargo_asan --release"
     "cargo_tsan --release"
+    "cargo_asan --release"
 )
 # timeout for each (TEST_NAME, RUNNER).
 TIMEOUTS=(
