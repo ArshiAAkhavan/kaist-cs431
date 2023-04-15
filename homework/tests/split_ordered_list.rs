@@ -34,17 +34,11 @@ pub fn fire() {
     let guard = epoch::pin();
 
     assert_eq!(list.insert(&9, 9, &guard), Ok(()));
-    println!("{list:?}");
     assert_eq!(list.insert(&8, 8, &guard), Ok(()));
-    println!("{list:?}");
     assert_eq!(list.insert(&13, 13, &guard), Ok(()));
-    println!("{list:?}");
     assert_eq!(list.insert(&5, 5, &guard), Ok(()));
-    println!("{list:?}");
     assert_eq!(list.insert(&7, 7, &guard), Ok(()));
-    println!("{list:?}");
     assert_eq!(list.lookup(&7, &guard), Some(&7));
-    println!("{list:?}");
 }
 
 #[test]
@@ -60,20 +54,9 @@ pub fn buckets() {
     assert_eq!(list.insert(&4, 4, &guard), Ok(()));
     assert_eq!(list.insert(&6, 6, &guard), Ok(()));
     assert_eq!(list.insert(&8, 8, &guard), Ok(()));
-    println!("{list:?}");
     assert_eq!(list.insert(&10, 10, &guard), Ok(()));
     assert_eq!(list.insert(&14, 14, &guard), Ok(()));
-    // list.lookup_bucket(6, &guard);
-    println!("{list:?}");
-    // list.lookup_bucket(5, &guard);
-    println!("{list:?}");
-    // list.lookup_bucket(4, &guard);
-    println!("{list:?}");
-    // assert_eq!(list.insert(&11, 11, &guard), Ok(()));
-    // list.lookup_bucket(3, &guard);
     assert_eq!(list.insert(&7, 7, &guard), Ok(()));
-    // list.lookup_bucket(7, &guard);
-    println!("{list:?}");
 }
 
 #[test]

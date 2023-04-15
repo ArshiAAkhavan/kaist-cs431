@@ -103,7 +103,6 @@ impl<V> SplitOrderedList<V> {
             let bucket_atomic = self.buckets.get(bucket, guard);
             let bucket_raw = bucket_atomic.load(Ordering::Acquire, guard);
             if !bucket_raw.is_null() {
-                let _ = node.into_box();
                 return;
             }
 
@@ -111,7 +110,6 @@ impl<V> SplitOrderedList<V> {
                 .find_harris_michael(&bucket_key, guard)
                 .unwrap_or(false)
             {
-                let _ = node.into_box();
                 return;
             }
             match cursor.insert(node, guard) {
